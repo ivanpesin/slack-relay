@@ -1,0 +1,92 @@
+#!/bin/bash
+
+VERS="v1.0"
+LOCKDIR="/var/tmp/monit-slack"
+
+usage() {
+
+    [ ! -z "$1" ] && echo "E: $1"
+
+    cat <<EOF
+monit-slack.bsh $VERS -- forward monit notifications to slack
+
+Usage:
+   monit-slack.bsh -s <slack-relay-addr> -r <reminder>
+
+    -s <addr>     Specifies slack-relay address, ex: slack-sender.local:8081
+    -r <reminder> Specifies reminder delay in seconds. Script will not relay
+                  duplicate monit notifications for <reminder> seconds
+
+EOF
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -s) SLACK_RELAY="$2"
+        shift; shift;;
+    -r) REMINDER="$2"
+        shift; shift;;
+    -l) LEVEL="$2"
+        shift; shift;;
+    -i) ICON="$2"
+        shift; shift;;
+    -i2) ICON2="$2"
+        shift; shift;;
+    -h) usage; exit 0;;
+     *) usage "Unknown parameter: $1"; exit 1;;
+  esac
+done
+
+[ -z "$SLACK_RELAY" ] && { usage "Missing slack relay address"; exit 1; }
+[ -z "$CHANNEL" ] && { usage "Missing target channel"; exit 1; }
+
+[ -z "$REMINDER" ] && REMINDER=$((60*60)) # 1h reminder
+[ -z "$ICON2" ] && ICON2=":chart_with_downwards_trend:"
+
+if [ -z "$LEVEL" ]; then
+  if [[ $MONIT_EVENT =~ succe ]]; then
+    LEVEL="good"
+    ICON2=":ok_hand:"
+  else
+    LEVEL="danger"
+    ICON2=":exclamation:"
+  fi
+fi
+
+# Split server information
+SLACK_RAW_HOST=$(echo $SLACK_RELAY | cut -d: -f1)
+SLACK_RAW_PORT=$(echo $SLACK_RELAY | cut -d: -f2)
+
+# check if this is a repeat message
+[ -d $LOCKDIR ] || mkdir -p "$LOCKDIR"
+HASH=$(echo "$CHANNEL-$LEVEL-$MONIT_HOST-$ICON-$ICON2 $MONIT_EVENT: $MONIT_DESCRIPTION" | md5sum | awk '{print $1}')
+LOCKFILE="$LOCKDIR/$HASH"
+
+if [ -f $LOCKFILE ]; then
+  MTIME=$(stat -c %Y $LOCKFILE)
+  EPOCH=$(date +%s)
+  if [ $(($EPOCH - $MTIME)) -lt $REMINDER ]; then
+    echo "%%% Reminder is not yet due"
+    exit 2
+  fi
+fi
+
+find $LOCKDIR -type f -mtime +0 -delete
+touch $LOCKFILE
+# ---
+
+MSG="CHANNEL $CHANNEL
+LEVEL $LEVEL
+FIELD Date short $MONIT_DATE
+FIELD Host short $MONIT_HOST
+PRETEXT
+$ICON $MONIT_EVENT: $MONIT_DESCRIPTION"
+
+hash nc
+if [ $? -eq 0 ]; then
+  echo "$MSG" | nc $SLACK_RAW_HOST $SLACK_RAW_PORT
+  echo
+else
+  echo "$MSG" > /dev/tcp/$SLACK_RAW_HOST/$SLACK_RAW_PORT
+  echo "%%% Sent one-way."
+fi
