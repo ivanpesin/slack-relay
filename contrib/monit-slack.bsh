@@ -11,9 +11,10 @@ usage() {
 monit-slack.bsh $VERS -- forward monit notifications to slack
 
 Usage:
-   monit-slack.bsh -s <slack-relay-addr> -r <reminder>
+   monit-slack.bsh -s <addr> -c <chan> [-r <sec>]
 
     -s <addr>     Specifies slack-relay address, ex: slack-sender.local:8081
+    -c <chan>     Channel where to relay notifications
     -r <reminder> Specifies reminder delay in seconds. Script will not relay
                   duplicate monit notifications for <reminder> seconds
 
@@ -25,6 +26,8 @@ while [ $# -gt 0 ]; do
     -s) SLACK_RELAY="$2"
         shift; shift;;
     -r) REMINDER="$2"
+        shift; shift;;
+    -c) CHANNEL="$2"
         shift; shift;;
     -l) LEVEL="$2"
         shift; shift;;
