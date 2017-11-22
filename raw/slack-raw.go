@@ -51,7 +51,10 @@ func handleRequest(conn net.Conn) {
 
 	text := ""
 	pretext := ""
-	var readin *string // pointer to text or pretext, depending on what we are reading
+	fallback := ""
+
+	var readin *string // pointer to text, pretext, or fallback,
+	// depending on what we are reading
 	readText := false
 	asAttachment := false
 
@@ -76,6 +79,18 @@ func handleRequest(conn net.Conn) {
 					continue
 				}
 				r.SetP(f[1], "channel")
+			case strings.ToUpper(f[0]) == "USERNAME":
+				if len(f) < 2 {
+					log.Printf("E: Invalid number of arguments: %v", s.Text())
+					continue
+				}
+				r.SetP(f[1], "username")
+			case strings.ToUpper(f[0]) == "EMOJI":
+				if len(f) < 2 {
+					log.Printf("E: Invalid number of arguments: %v", s.Text())
+					continue
+				}
+				r.SetP(f[1], "icon_emoji")
 			case strings.ToUpper(f[0]) == "LEVEL":
 				if len(f) < 2 {
 					log.Printf("E: Invalid number of arguments: %v", s.Text())
@@ -106,6 +121,10 @@ func handleRequest(conn net.Conn) {
 				a.ArrayAppend(field.Data(), "fields")
 			case strings.ToUpper(f[0]) == "TEXT":
 				readin = &text
+				readText = true
+			case strings.ToUpper(f[0]) == "FALLBACK":
+				asAttachment = true
+				readin = &fallback
 				readText = true
 			case strings.ToUpper(f[0]) == "PRETEXT":
 				asAttachment = true
