@@ -42,7 +42,7 @@ func main() {
 
 func handleRequest(conn net.Conn) {
 
-	rid := uuid.NewV4().String()[:8]
+	rid := uuid.Must(uuid.NewV4()).String()[:8]
 	log.Printf("[%s] accepted: %v", rid, conn.RemoteAddr().String())
 	defer conn.Close()
 
