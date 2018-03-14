@@ -11,34 +11,21 @@ import (
 	"os"
 	"strings"
 
+	"github.com/ivanpesin/slack-relay/slack"
 	"gopkg.in/yaml.v2"
 )
 
-const appVersion = "1.0"
+const appVersion = "1.1"
 
 type options struct {
-	file    string
-	postURL string
-	channel string
+	Relay   string `yaml:"relay"`
+	File    string
+	PostURL string `yaml:"post_url"`
+	Channel string `yaml:"channel"`
 
-	color string
+	Color string
 
-	debug bool
-}
-
-type slackMessage struct {
-	Channel     string                              `json:"channel"`
-	Fallback    string                              `json:"fallback"`
-	Color       string                              `json:"color"`
-	Text        string                              `json:"text"`
-	MrkdwnIn    []string                            `json:"mrkdwn_in"`
-	Attachments []map[string][]slackAttachmentField `json:"attachments"`
-}
-
-type slackAttachmentField struct {
-	Title string `json:"title"`
-	Value string `json:"value"`
-	Short bool   `json:"short"`
+	Debug bool `yaml:"debug"`
 }
 
 var monit struct {
@@ -53,14 +40,14 @@ var config options
 var cfFile = "/etc/slack-monit.conf"
 
 func debug(s string) {
-	if config.debug {
+	if config.Debug {
 		log.Print(s)
 	}
 }
 
 func readConfigFile() {
-	if _, err := os.Stat(config.file); err == nil {
-		buf, err := ioutil.ReadFile(config.file)
+	if _, err := os.Stat(config.File); err == nil {
+		buf, err := ioutil.ReadFile(config.File)
 		if err != nil {
 			log.Fatalf("Unable to read config file: %v", err)
 		}
@@ -71,71 +58,102 @@ func readConfigFile() {
 			log.Fatalf("Unable to parse config file: %v", err)
 		}
 
+		debug(fmt.Sprintf("Configuration from file %s: %+v\n", config.File, cf))
 		// set if not overriden by cli flag
-		if config.postURL == "" {
-			config.postURL = cf.postURL
+		if config.PostURL == "" {
+			config.PostURL = cf.PostURL
 		}
-		if config.channel == "" {
-			config.channel = cf.channel
+		if config.Channel == "" {
+			config.Channel = cf.Channel
 		}
-
+		if config.Relay == "" {
+			config.Relay = cf.Relay
+		}
+	}
+	if config.Channel == "" {
+		config.Channel = "#random"
 	}
 }
 
-func init() {
-	flag.StringVar(&config.file, "f", cfFile, "config file")
-	flag.StringVar(&config.channel, "channel", "#random", "channel to post to")
-	flag.StringVar(&config.postURL, "url", config.postURL, "slack webhook")
-	flag.BoolVar(&config.debug, "d", false, "enable debug messages")
-}
-
-func main() {
-	flag.Parse()
-	readConfigFile()
-
+func readMonitData() {
+	// Get monit information
 	monit.service = os.Getenv("MONIT_SERVICE")
 	monit.event = os.Getenv("MONIT_EVENT")
 	monit.description = os.Getenv("MONIT_DESCRIPTION")
 	monit.host = os.Getenv("MONIT_HOST")
 	monit.date = os.Getenv("MONIT_DATE")
 
-	if config.color == "" {
+	// guess color for the message if not set
+	if config.Color == "" {
+		config.Color = "danger"
 		if strings.Contains(monit.event, "succe") || strings.Contains(monit.event, "Exists") {
-			config.color = "good"
-		} else {
-			config.color = "danger"
+			config.Color = "good"
 		}
 	}
 
-	payload := &slackMessage{}
-	payload.Channel = config.channel
-	payload.Color = config.color
-	payload.Fallback = fmt.Sprintf("%s: %s on %s\n%s", monit.service, monit.event, monit.host, monit.description)
-	payload.Text = fmt.Sprintf("`%s`: *%s*\n%s", monit.service, monit.event, monit.description)
-	payload.MrkdwnIn = []string{"text"}
-	payload.Attachments = make([]map[string][]slackAttachmentField, 1)
-	payload.Attachments[0] = make(map[string][]slackAttachmentField)
-	payload.Attachments[0]["fields"] = []slackAttachmentField{
-		slackAttachmentField{Title: "Date", Value: monit.date, Short: true},
-		slackAttachmentField{Title: "Host", Value: monit.host, Short: true},
+}
+
+func formPayload() *slack.Message {
+	// create payload for slack message
+	payload := &slack.Message{}
+	payload.Channel = config.Channel
+	payload.Attachments = append(payload.Attachments, slack.Attachment{})
+	payload.Attachments[0].Color = config.Color
+	payload.Attachments[0].Fallback = fmt.Sprintf("%s: %s on %s\n%s", monit.service, monit.event, monit.host, monit.description)
+	payload.Attachments[0].Text = fmt.Sprintf("`%s`: *%s*\n%s", monit.service, monit.event, monit.description)
+	payload.Attachments[0].MrkdwnIn = []string{"text"}
+	payload.Attachments[0].Fields = []slack.Field{
+		slack.Field{Title: "Date", Value: monit.date, Short: true},
+		slack.Field{Title: "Host", Value: monit.host, Short: true},
 	}
 
-	buf, err := json.MarshalIndent(&payload, "", "  ")
+	return payload
+}
+
+func sendSlackMessage(m *slack.Message) error {
+	// create JSON
+	buf, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
-		log.Fatalf("Failed to create JSON payload: %v\n", err)
+		return fmt.Errorf("failed to create JSON payload: %v", err)
 	}
 
-	debug(fmt.Sprintf("Sending to %s, payload:\n%s", config.postURL, buf))
-
-	resp, err := http.Post(config.postURL, "application/json", bytes.NewReader(buf))
+	// post to Slack
+	debug(fmt.Sprintf("Sending to %s, payload:\n%s", config.PostURL, buf))
+	resp, err := http.Post(config.PostURL, "application/json", bytes.NewReader(buf))
 	if err != nil {
-		log.Fatalf("Failed to send message to slack: %v\n", err)
+		return fmt.Errorf("failed to send message to slack: %v", err)
 	}
 
+	// process response
 	b, _ := ioutil.ReadAll(resp.Body)
 	debug(fmt.Sprintf("Response received, status: %s\nBody:\n%s", resp.Status, b))
 
 	if resp.StatusCode != http.StatusOK {
-		log.Fatalf("Error status received: %v", resp.StatusCode)
+		return fmt.Errorf("error status received: %v\nBody:\n%s", resp.StatusCode, b)
+	}
+	return nil
+}
+
+func init() {
+	flag.StringVar(&config.File, "f", cfFile, "config file")
+	flag.StringVar(&config.Channel, "channel", config.Channel, "channel to post to")
+	flag.StringVar(&config.PostURL, "url", config.PostURL, "slack webhook")
+	flag.StringVar(&config.Relay, "relay", config.Relay, "slack raw protocol relay")
+	flag.BoolVar(&config.Debug, "d", false, "enable debug messages")
+}
+
+func main() {
+	flag.Parse()
+	readConfigFile()
+
+	if config.PostURL == "" {
+		log.Fatalf("Slack webhook POST URL is required.")
+	}
+
+	readMonitData()
+
+	p := formPayload()
+	if err := sendSlackMessage(p); err != nil {
+		log.Fatalf("Error: %v", err)
 	}
 }
