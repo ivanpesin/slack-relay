@@ -16,6 +16,7 @@ import (
 )
 
 const appVersion = "1.1"
+const defaultConfigFile = "/etc/slack-monit.conf"
 
 type options struct {
 	Relay   string `yaml:"relay"`
@@ -37,14 +38,34 @@ var monit struct {
 }
 
 var config options
-var cfFile = "/etc/slack-monit.conf"
 
+// shows a message if in debug mode
 func debug(s string) {
 	if config.Debug {
 		log.Print(s)
 	}
 }
 
+// returns the location of configuration file
+func configFile() string {
+	// highest priority if specified on command line
+	if len(os.Args) > 2 {
+		for i, a := range os.Args {
+			if a == "-c" && i+1 < len(os.Args) {
+				return os.Args[i+1]
+			}
+		}
+	}
+	// check environment variable
+	s := os.Getenv("SLACK_MONIT_CONF")
+	if s != "" {
+		return s
+	}
+	// return the default
+	return defaultConfigFile
+}
+
+// load configuration from a file
 func readConfigFile() {
 	if _, err := os.Stat(config.File); err == nil {
 		buf, err := ioutil.ReadFile(config.File)
@@ -52,26 +73,12 @@ func readConfigFile() {
 			log.Fatalf("Unable to read config file: %v", err)
 		}
 
-		var cf options
-		err = yaml.Unmarshal(buf, &cf)
+		err = yaml.Unmarshal(buf, &config)
 		if err != nil {
 			log.Fatalf("Unable to parse config file: %v", err)
 		}
 
-		debug(fmt.Sprintf("Configuration from file %s: %+v\n", config.File, cf))
-		// set if not overriden by cli flag
-		if config.PostURL == "" {
-			config.PostURL = cf.PostURL
-		}
-		if config.Channel == "" {
-			config.Channel = cf.Channel
-		}
-		if config.Relay == "" {
-			config.Relay = cf.Relay
-		}
-	}
-	if config.Channel == "" {
-		config.Channel = "#random"
+		debug(fmt.Sprintf("Configuration from file %s: %+v\n", config.File, config))
 	}
 }
 
@@ -135,16 +142,22 @@ func sendSlackMessage(m *slack.Message) error {
 }
 
 func init() {
-	flag.StringVar(&config.File, "f", cfFile, "config file")
-	flag.StringVar(&config.Channel, "channel", config.Channel, "channel to post to")
-	flag.StringVar(&config.PostURL, "url", config.PostURL, "slack webhook")
-	flag.StringVar(&config.Relay, "relay", config.Relay, "slack raw protocol relay")
+	flag.StringVar(&config.File, "c", defaultConfigFile, "config file")
+	flag.StringVar(&config.Channel, "channel", "#random", "slack channel to post to")
+	flag.StringVar(&config.PostURL, "url", "", "slack webhook")
+	flag.StringVar(&config.Relay, "relay", "", "slack raw protocol relay")
 	flag.BoolVar(&config.Debug, "d", false, "enable debug messages")
+
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage of %s:\n", os.Args[0])
+		flag.PrintDefaults()
+	}
 }
 
 func main() {
-	flag.Parse()
+
 	readConfigFile()
+	flag.Parse()
 
 	if config.PostURL == "" {
 		log.Fatalf("Slack webhook POST URL is required.")
