@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -14,12 +15,12 @@ import (
 	"time"
 
 	"github.com/satori/go.uuid"
-
-	"github.com/Jeffail/gabs"
 )
 
-var slackURL = os.Getenv("SLACK_GW_URL")
-var listenSocket = flag.String("l", "0.0.0.0:8080", "socket to listen on")
+var config struct {
+	PostURL string `yaml:"post_url"`
+	LSock   string `yaml:"listen"`
+}
 
 func sendToSlack(payload string) (string, error) {
 
@@ -28,7 +29,7 @@ func sendToSlack(payload string) (string, error) {
 	}
 
 	resp, err := client.Post(
-		slackURL,
+		config.PostURL,
 		"application/json",
 		strings.NewReader(payload))
 	if err != nil {
@@ -57,20 +58,19 @@ func requestError(w http.ResponseWriter, id string, code int, m string) {
 
 func handler(w http.ResponseWriter, r *http.Request) {
 
-	rid := uuid.NewV4().String()[:8]
+	rid := uuid.Must(uuid.NewV4()).String()[:8]
 
 	b, _ := ioutil.ReadAll(r.Body)
-	parsed, err := gabs.ParseJSON(b)
-	if err != nil {
+	if !json.Valid(b) {
 		log.Printf("[%s] body: %s", rid, string(b))
-		requestError(w, rid, http.StatusBadRequest, err.Error())
+		requestError(w, rid, http.StatusBadRequest, "Unable to parse JSON")
 		return
 	}
 
-	log.Printf("[%s] sending: %s", rid, parsed.String())
+	log.Printf("[%s] sending: %s", rid, b)
 
 	var resp string
-	resp, err = sendToSlack(parsed.String())
+	resp, err := sendToSlack(string(b))
 	if err != nil {
 		requestError(w, rid, http.StatusBadGateway, "slack resp: "+err.Error())
 		return
@@ -82,10 +82,17 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	return
 }
 
+func init() {
+	config.PostURL = os.Getenv("SLACK_GW_URL")
+	flag.StringVar(&config.LSock, "l", "0.0.0.0:8080", "socket to listen on")
+
+	flag.Parse()
+}
+
 func main() {
 
-	log.Printf("Slack URL: %v", slackURL)
-	log.Printf("Listening on: %v", *listenSocket)
+	log.Printf("Slack URL: %v", config.PostURL)
+	log.Printf("Listening on: %v", config.LSock)
 
 	// subscribe to SIGINT signals
 	stopChan := make(chan os.Signal)
@@ -95,7 +102,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", handler)
-	srv := &http.Server{Addr: *listenSocket, Handler: mux}
+	srv := &http.Server{Addr: config.LSock, Handler: mux}
 
 	go func() {
 		if err := srv.ListenAndServe(); err != nil {
@@ -110,5 +117,9 @@ func main() {
 	defer cancel()
 	srv.Shutdown(ctx)
 
-	log.Println("Server gracefully stopped")
+	if ctx.Err() == context.DeadlineExceeded {
+		log.Println("Server shutdown timeout, forced termination")
+	} else {
+		log.Println("Server stopped")
+	}
 }

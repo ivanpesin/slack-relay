@@ -151,6 +151,7 @@ func init() {
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage of %s:\n", os.Args[0])
 		flag.PrintDefaults()
+		fmt.Fprintf(os.Stderr, "Default configuration file: %s\n", defaultConfigFile)
 	}
 }
 
